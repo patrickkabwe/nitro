@@ -47,6 +47,8 @@ export interface TestRunner {
 // 1) It's a lot of allocations and any VM (JS, JVM) will likely trigger GC
 // 2) In JVM, 51_200 is the limit for `jni::global_ref`s, then the app crashes - this intentionally exhausts that
 const MEMORY_LEAK_TEST_ALLOCATION_COUNT = 55_000
+const JSI_CACHE_FUNCTION_LEAK_TEST_ALLOCATION_COUNT =
+  MEMORY_LEAK_TEST_ALLOCATION_COUNT
 const EXTERNAL_MEMORY_TEST_SIZE = 1024 * 1024
 
 type HermesInternal = {
@@ -1672,6 +1674,52 @@ export function getTests(
       })
         .didNotThrow()
         .equals(10_000)
+    ),
+    createTest('JSICache does not leak temporary JS callbacks', () =>
+      it(() => {
+        const BATCH_SIZE = 1000
+        const initialFunctionCacheSize =
+          NitroModules.debug_getJSICacheFunctionCacheSize()
+        let callbackCalls = 0
+
+        for (
+          let i = 0;
+          i < JSI_CACHE_FUNCTION_LEAK_TEST_ALLOCATION_COUNT;
+          i++
+        ) {
+          const callbackResult = testObject.callbackSync(() => {
+            callbackCalls++
+            return i
+          })
+          if (callbackResult !== i) {
+            throw new Error(
+              `callbackSync(...) returned ${callbackResult} instead of ${i}.`
+            )
+          }
+
+          if ((i + 1) % BATCH_SIZE === 0) {
+            gc()
+          }
+        }
+
+        gc()
+        gc()
+        gc()
+
+        const finalFunctionCacheSize =
+          NitroModules.debug_getJSICacheFunctionCacheSize()
+        const functionCacheGrowth =
+          finalFunctionCacheSize - initialFunctionCacheSize
+        if (functionCacheGrowth > BATCH_SIZE) {
+          throw new Error(
+            `JSICache leaked ${functionCacheGrowth} temporary JS callbacks. Initial function-cache size: ${initialFunctionCacheSize}, final function-cache size: ${finalFunctionCacheSize}.`
+          )
+        }
+
+        return callbackCalls
+      })
+        .didNotThrow()
+        .equals(JSI_CACHE_FUNCTION_LEAK_TEST_ALLOCATION_COUNT)
     ),
     createTest(
       'HybridObjects do not leak memory when automatically reclaimed by JS GC',
